@@ -1,0 +1,6 @@
+path,type,content
+/,dir,
+/readme.txt,file,Hello from VFS
+/data.txt,file,Some data here
+/bin,dir,
+/bin/info.txt,file,Binary-like content

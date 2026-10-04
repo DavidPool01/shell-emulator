@@ -1,0 +1,10 @@
+path,type,content
+/,dir,
+/home,dir,
+/home/user,dir,
+/home/user/docs,dir,
+/home/user/docs/note.txt,file,Deep file content
+/home/user/docs/secret.txt,file,Top secret
+/var,dir,
+/var/log,dir,
+/var/log/app.log,file,Log line 

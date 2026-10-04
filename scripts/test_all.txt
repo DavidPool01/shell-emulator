@@ -1,0 +1,7 @@
+# Проверка базовых команд
+ls
+cd /tmp
+conf-dump
+
+# Проверка ошибки
+unknown_command

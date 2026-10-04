@@ -1,0 +1,4 @@
+conf-dump
+ls
+cd /home/user/docs
+ls

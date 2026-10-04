@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Эмулятор оболочки ОС — Этап 2 (Конфигурация)."""
+"""Эмулятор оболочки ОС — Этап 3 (VFS)."""
 
 import argparse
+import base64
+import csv
 import os
 import socket
-import sys
 import tkinter as tk
 from tkinter import scrolledtext
-from typing import List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 def get_prompt_info() -> str:
@@ -17,8 +18,90 @@ def get_prompt_info() -> str:
     return f"{username}@{hostname}"
 
 
+class VFSNode:
+    """Узел виртуальной файловой системы (файл или папка)."""
+
+    def __init__(self, name: str, is_dir: bool = True, content: Optional[bytes] = None) -> None:
+        self.name = name
+        self.is_dir = is_dir
+        self.content = content
+        self.children: Dict[str, "VFSNode"] = {}
+
+
+class VFS:
+    """Виртуальная файловая система, загружаемая из CSV."""
+
+    def __init__(self) -> None:
+        self.root = VFSNode("/", is_dir=True)
+        self.loaded = False
+        self.source_path: Optional[str] = None
+
+    def load_from_csv(self, path: str) -> None:
+        """Загружает VFS из CSV-файла в память."""
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"файл VFS не найден: {path}")
+
+        self.root = VFSNode("/", is_dir=True)
+        self.source_path = path
+
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+
+                if not reader.fieldnames:
+                    raise ValueError("пустой CSV-файл")
+
+                fieldnames = [name.strip().lstrip("\ufeff") for name in reader.fieldnames]
+
+                if "path" not in fieldnames or "type" not in fieldnames:
+                    raise ValueError(f"неверный формат CSV: нужны столбцы path и type, сейчас: {fieldnames}")
+
+                for row in reader:
+                    clean_row = {
+                        k.strip().lstrip("\ufeff"): (v or "").strip()
+                        for k, v in row.items()
+                    }
+
+                    node_path = clean_row.get("path", "").strip()
+                    node_type = clean_row.get("type", "").strip().lower()
+                    content_raw = clean_row.get("content", "")
+
+                    if not node_path or node_path == "/":
+                        continue
+
+                    parts = [p for p in node_path.strip("/").split("/") if p]
+                    current = self.root
+
+                    for i, part in enumerate(parts):
+                        is_last = i == len(parts) - 1
+
+                        if part not in current.children:
+                            if is_last:
+                                if node_type == "dir":
+                                    current.children[part] = VFSNode(part, is_dir=True)
+                                else:
+                                    try:
+                                        content = base64.b64decode(content_raw) if content_raw else b""
+                                    except Exception:
+                                        content = content_raw.encode("utf-8")
+                                    current.children[part] = VFSNode(
+                                        part, is_dir=False, content=content
+                                    )
+                            else:
+                                current.children[part] = VFSNode(part, is_dir=True)
+
+                        current = current.children[part]
+
+            self.loaded = True
+
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            raise ValueError(str(e))
+
+
 class ShellEmulator:
-    """GUI-эмулятор командной оболочки с поддержкой конфигурации."""
+    """GUI-эмулятор командной оболочки с поддержкой VFS."""
 
     def __init__(
         self,
@@ -26,10 +109,11 @@ class ShellEmulator:
         prompt: Optional[str] = None,
         script_path: Optional[str] = None,
     ) -> None:
-        """Создаёт главное окно и сохраняет параметры конфигурации."""
+        """Создаёт главное окно и загружает конфигурацию + VFS."""
         self.vfs_path = vfs_path
         self.script_path = script_path
         self.username_host = get_prompt_info()
+        self.vfs = VFS()
 
         if prompt:
             self.prompt = prompt
@@ -76,11 +160,18 @@ class ShellEmulator:
 
         self._print_debug_config()
         self.write_output(
-            "Эмулятор оболочки (Этап 2. Конфигурация)\n"
+            "Эмулятор оболочки (Этап 3. VFS)\n"
             f"Пользователь: {self.username_host}\n"
             "Доступные команды: ls, cd, exit, conf-dump\n"
             f"{'-' * 50}\n"
         )
+
+        if self.vfs_path:
+            try:
+                self.vfs.load_from_csv(self.vfs_path)
+                self.write_output(f"VFS успешно загружена из: {self.vfs_path}\n")
+            except Exception as e:
+                self.write_output(f"Ошибка загрузки VFS: {e}\n")
 
         if self.script_path:
             self.root.after(100, self.run_startup_script)
@@ -108,9 +199,7 @@ class ShellEmulator:
         parts = line.strip().split()
         if not parts:
             return "", []
-        command = parts[0]
-        args = parts[1:]
-        return command, args
+        return parts[0], parts[1:]
 
     def execute(self, command: str, args: List[str]) -> bool:
         """Выполняет команду. Возвращает True при успехе, False при ошибке."""
@@ -134,16 +223,16 @@ class ShellEmulator:
             self.write_output(f"vfs_path={self.vfs_path}\n")
             self.write_output(f"prompt={self.prompt}\n")
             self.write_output(f"script_path={self.script_path}\n")
+            self.write_output(f"vfs_loaded={self.vfs.loaded}\n")
             return True
 
         self.write_output(f"Ошибка: неизвестная команда '{command}'\n")
         return False
 
     def on_enter(self, event=None) -> None:
-        """Обработчик нажатия Enter. Читает ввод, разбирает и выполняет команду."""
+        """Обработчик нажатия Enter."""
         line = self.entry.get()
         self.entry.delete(0, tk.END)
-
         self.write_output(f"{self.prompt}{line}\n")
 
         try:
@@ -191,21 +280,21 @@ class ShellEmulator:
         self.write_output("=== Стартовый скрипт выполнен успешно ===\n")
 
     def run(self) -> None:
-        """Запускает главный цикл обработки событий GUI."""
+        """Запускает главный цикл GUI."""
         self.root.mainloop()
 
 
 def parse_args() -> argparse.Namespace:
     """Разбирает аргументы командной строки."""
     parser = argparse.ArgumentParser(description="Эмулятор оболочки ОС")
-    parser.add_argument("--vfs", type=str, default=None, help="Путь к физическому расположению VFS")
-    parser.add_argument("--prompt", type=str, default=None, help="Пользовательское приглашение к вводу")
+    parser.add_argument("--vfs", type=str, default=None, help="Путь к CSV-файлу VFS")
+    parser.add_argument("--prompt", type=str, default=None, help="Пользовательское приглашение")
     parser.add_argument("--script", type=str, default=None, help="Путь к стартовому скрипту")
     return parser.parse_args()
 
 
 def main() -> None:
-    """Точка входа в программу. Создаёт и запускает эмулятор."""
+    """Точка входа в программу."""
     args = parse_args()
     app = ShellEmulator(
         vfs_path=args.vfs,
