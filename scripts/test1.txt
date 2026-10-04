@@ -1,0 +1,4 @@
+ls
+cd /home
+conf-dump
+ls -la
