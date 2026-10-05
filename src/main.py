@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Эмулятор оболочки ОС — Этап 3 (VFS)."""
+"""Эмулятор оболочки ОС — Этап 4 (Основные команды)."""
 
 import argparse
 import base64
 import csv
 import os
+import platform
 import socket
 import tkinter as tk
 from tkinter import scrolledtext
@@ -45,28 +46,17 @@ class VFS:
         self.source_path = path
 
         try:
-            with open(path, "r", encoding="utf-8-sig") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
-
-                if not reader.fieldnames:
-                    raise ValueError("пустой CSV-файл")
-
-                fieldnames = [name.strip().lstrip("\ufeff") for name in reader.fieldnames]
-
-                if "path" not in fieldnames or "type" not in fieldnames:
-                    raise ValueError(f"неверный формат CSV: нужны столбцы path и type, сейчас: {fieldnames}")
+                if not reader.fieldnames or "path" not in reader.fieldnames or "type" not in reader.fieldnames:
+                    raise ValueError("неверный формат CSV: нужны столбцы path и type")
 
                 for row in reader:
-                    clean_row = {
-                        k.strip().lstrip("\ufeff"): (v or "").strip()
-                        for k, v in row.items()
-                    }
+                    node_path = row["path"].strip()
+                    node_type = row["type"].strip().lower()
+                    content_raw = row.get("content", "") or ""
 
-                    node_path = clean_row.get("path", "").strip()
-                    node_type = clean_row.get("type", "").strip().lower()
-                    content_raw = clean_row.get("content", "")
-
-                    if not node_path or node_path == "/":
+                    if node_path == "/":
                         continue
 
                     parts = [p for p in node_path.strip("/").split("/") if p]
@@ -74,7 +64,6 @@ class VFS:
 
                     for i, part in enumerate(parts):
                         is_last = i == len(parts) - 1
-
                         if part not in current.children:
                             if is_last:
                                 if node_type == "dir":
@@ -84,24 +73,45 @@ class VFS:
                                         content = base64.b64decode(content_raw) if content_raw else b""
                                     except Exception:
                                         content = content_raw.encode("utf-8")
-                                    current.children[part] = VFSNode(
-                                        part, is_dir=False, content=content
-                                    )
+                                    current.children[part] = VFSNode(part, is_dir=False, content=content)
                             else:
                                 current.children[part] = VFSNode(part, is_dir=True)
-
                         current = current.children[part]
 
             self.loaded = True
-
         except FileNotFoundError:
             raise
         except Exception as e:
-            raise ValueError(str(e))
+            raise ValueError(f"ошибка загрузки VFS: {e}")
+
+    def resolve(self, path: str, cwd: str) -> Optional[VFSNode]:
+        """Возвращает узел по пути (абсолютному или относительному)."""
+        if not path or path == ".":
+            path = cwd
+        elif not path.startswith("/"):
+            if cwd == "/":
+                path = "/" + path
+            else:
+                path = cwd.rstrip("/") + "/" + path
+
+        if path == "/":
+            return self.root
+
+        parts = [p for p in path.strip("/").split("/") if p]
+        current = self.root
+        for part in parts:
+            if part not in current.children:
+                return None
+            current = current.children[part]
+        return current
+
+    def get_path_str(self, node: VFSNode, current: Optional[VFSNode] = None, path: str = "") -> Optional[str]:
+        """Служебный метод (не используется напрямую)."""
+        return None
 
 
 class ShellEmulator:
-    """GUI-эмулятор командной оболочки с поддержкой VFS."""
+    """GUI-эмулятор командной оболочки."""
 
     def __init__(
         self,
@@ -109,11 +119,12 @@ class ShellEmulator:
         prompt: Optional[str] = None,
         script_path: Optional[str] = None,
     ) -> None:
-        """Создаёт главное окно и загружает конфигурацию + VFS."""
+        """Создаёт главное окно, загружает VFS и конфигурацию."""
         self.vfs_path = vfs_path
         self.script_path = script_path
         self.username_host = get_prompt_info()
         self.vfs = VFS()
+        self.cwd = "/"
 
         if prompt:
             self.prompt = prompt
@@ -160,9 +171,9 @@ class ShellEmulator:
 
         self._print_debug_config()
         self.write_output(
-            "Эмулятор оболочки (Этап 3. VFS)\n"
+            "Эмулятор оболочки (Этап 4. Основные команды)\n"
             f"Пользователь: {self.username_host}\n"
-            "Доступные команды: ls, cd, exit, conf-dump\n"
+            "Доступные команды: ls, cd, tac, uname, who, conf-dump, exit\n"
             f"{'-' * 50}\n"
         )
 
@@ -185,14 +196,14 @@ class ShellEmulator:
         print("===================================")
 
     def write_output(self, text: str) -> None:
-        """Выводит переданный текст в область вывода эмулятора."""
+        """Выводит текст в область вывода."""
         self.output.configure(state="normal")
         self.output.insert(tk.END, text)
         self.output.see(tk.END)
         self.output.configure(state="disabled")
 
     def parse_command(self, line: str) -> Tuple[str, List[str]]:
-        """Разбирает строку на команду и аргументы. Проверяет незакрытые кавычки."""
+        """Разбирает строку на команду и аргументы. Проверяет кавычки."""
         if line.count('"') % 2 != 0 or line.count("'") % 2 != 0:
             raise ValueError("незакрытые кавычки")
 
@@ -201,8 +212,106 @@ class ShellEmulator:
             return "", []
         return parts[0], parts[1:]
 
+    def cmd_ls(self, args: List[str]) -> bool:
+        """Реализация команды ls."""
+        if not self.vfs.loaded:
+            self.write_output("Ошибка: VFS не загружена\n")
+            return False
+
+        path = args[0] if args else self.cwd
+        node = self.vfs.resolve(path, self.cwd)
+
+        if node is None:
+            self.write_output(f"Ошибка: нет такого файла или каталога: {path}\n")
+            return False
+
+        if not node.is_dir:
+            self.write_output(f"{node.name}\n")
+            return True
+
+        names = sorted(node.children.keys())
+        if names:
+            self.write_output("  ".join(names) + "\n")
+        return True
+
+    def cmd_cd(self, args: List[str]) -> bool:
+        """Реализация команды cd."""
+        if not self.vfs.loaded:
+            self.write_output("Ошибка: VFS не загружена\n")
+            return False
+
+        if not args:
+            self.cwd = "/"
+            return True
+
+        path = args[0]
+        node = self.vfs.resolve(path, self.cwd)
+
+        if node is None:
+            self.write_output(f"Ошибка: нет такого файла или каталога: {path}\n")
+            return False
+
+        if not node.is_dir:
+            self.write_output(f"Ошибка: не каталог: {path}\n")
+            return False
+
+        if path.startswith("/"):
+            self.cwd = "/" + "/".join(p for p in path.strip("/").split("/") if p)
+            if self.cwd != "/":
+                self.cwd = self.cwd.rstrip("/") or "/"
+        else:
+            if self.cwd == "/":
+                self.cwd = "/" + path.strip("/")
+            else:
+                self.cwd = self.cwd.rstrip("/") + "/" + path.strip("/")
+            self.cwd = "/" + "/".join(p for p in self.cwd.strip("/").split("/") if p) or "/"
+
+        return True
+
+    def cmd_tac(self, args: List[str]) -> bool:
+        """Реализация команды tac (вывод файла в обратном порядке)."""
+        if not self.vfs.loaded:
+            self.write_output("Ошибка: VFS не загружена\n")
+            return False
+
+        if not args:
+            self.write_output("Ошибка: укажите имя файла\n")
+            return False
+
+        path = args[0]
+        node = self.vfs.resolve(path, self.cwd)
+
+        if node is None:
+            self.write_output(f"Ошибка: нет такого файла: {path}\n")
+            return False
+
+        if node.is_dir:
+            self.write_output(f"Ошибка: это каталог: {path}\n")
+            return False
+
+        try:
+            text = (node.content or b"").decode("utf-8", errors="replace")
+            lines = text.splitlines()
+            for line in reversed(lines):
+                self.write_output(line + "\n")
+        except Exception as e:
+            self.write_output(f"Ошибка чтения файла: {e}\n")
+            return False
+
+        return True
+
+    def cmd_uname(self, args: List[str]) -> bool:
+        """Реализация команды uname."""
+        self.write_output(f"{platform.system()} {platform.release()}\n")
+        return True
+
+    def cmd_who(self, args: List[str]) -> bool:
+        """Реализация команды who."""
+        self.write_output(f"{self.username_host}\n")
+        return True
+
     def execute(self, command: str, args: List[str]) -> bool:
-        """Выполняет команду. Возвращает True при успехе, False при ошибке."""
+        """Выполняет команду. Возвращает True при успехе."""
         if not command:
             return True
 
@@ -212,18 +321,26 @@ class ShellEmulator:
             return True
 
         if command == "ls":
-            self.write_output(f"ls {' '.join(args)}\n")
-            return True
+            return self.cmd_ls(args)
 
         if command == "cd":
-            self.write_output(f"cd {' '.join(args)}\n")
-            return True
+            return self.cmd_cd(args)
+
+        if command == "tac":
+            return self.cmd_tac(args)
+
+        if command == "uname":
+            return self.cmd_uname(args)
+
+        if command == "who":
+            return self.cmd_who(args)
 
         if command == "conf-dump":
             self.write_output(f"vfs_path={self.vfs_path}\n")
             self.write_output(f"prompt={self.prompt}\n")
             self.write_output(f"script_path={self.script_path}\n")
             self.write_output(f"vfs_loaded={self.vfs.loaded}\n")
+            self.write_output(f"cwd={self.cwd}\n")
             return True
 
         self.write_output(f"Ошибка: неизвестная команда '{command}'\n")

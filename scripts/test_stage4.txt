@@ -1,0 +1,22 @@
+# Проверка who и uname
+who
+uname
+
+# Проверка ls и cd
+ls
+cd home
+ls
+cd user
+ls
+cd docs
+ls
+cd /
+ls
+
+# Проверка tac
+tac home/user/docs/note.txt
+
+# Проверка ошибок
+cd /not_exists
+ls /not_exists
+tac /not_exist

@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0\.."
-py src\main.py --vfs C:\vfs\minimal --prompt "test1> " --script scripts\test1.txt
+py src\main.py --vfs vfs\deep.csv --prompt "test1> " --script scripts\test1.txt
